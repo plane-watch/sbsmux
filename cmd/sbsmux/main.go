@@ -71,7 +71,7 @@ var (
 				Value:    ":30003",
 			},
 			&cli.IntFlag{
-				Category: "SBS In",
+				Category: "SBS Out",
 				Name:     "bufsizeout",
 				Usage:    "Buffer size per-host for outgoing messages (number of messages)",
 				Value:    100,
