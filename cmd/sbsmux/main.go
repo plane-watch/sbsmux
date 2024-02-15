@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"reflect"
+	"runtime"
 	"sync"
 	"time"
 
@@ -13,47 +15,17 @@ import (
 	"github.com/urfave/cli/v2"
 )
 
-type outputs struct {
+// iochans for all remote hosts of a given type (input / output)
+type iochans struct {
+	mu    sync.RWMutex
+	chans map[string]*iochan // string key is remote address as string
+}
+
+// iochan for each remote host
+type iochan struct {
 	mu          sync.RWMutex
-	outputChans map[string]*outputPerClient
-}
-
-func (c *outputs) Lock() {
-	c.mu.Lock()
-}
-
-func (c *outputs) Unlock() {
-	c.mu.Unlock()
-}
-
-func (c *outputs) RLock() {
-	c.mu.RLock()
-}
-
-func (c *outputs) RUnlock() {
-	c.mu.RUnlock()
-}
-
-type outputPerClient struct {
-	mu          sync.RWMutex
-	outChan     chan []byte
+	c           chan []byte // msg buffer
 	msgsDropped uint64
-}
-
-func (c *outputPerClient) Lock() {
-	c.mu.Lock()
-}
-
-func (c *outputPerClient) Unlock() {
-	c.mu.Unlock()
-}
-
-func (c *outputPerClient) RLock() {
-	c.mu.RLock()
-}
-
-func (c *outputPerClient) RUnlock() {
-	c.mu.RUnlock()
 }
 
 var (
@@ -65,6 +37,11 @@ var (
 		Usage:       "Multiplexer for SBS data",
 		Description: `Receives SBS data via connect out or connect in. Sends SBS data via connect out or connect in.`,
 		Flags: []cli.Flag{
+			&cli.IntFlag{
+				Name:  "numworkers",
+				Usage: "Number of workers routing messages (defaults to number of CPUs)",
+				Value: runtime.NumCPU(),
+			},
 			&cli.StringSliceFlag{
 				Category: "SBS In",
 				Name:     "inputconnect",
@@ -79,8 +56,8 @@ var (
 			&cli.IntFlag{
 				Category: "SBS In",
 				Name:     "bufsizein",
-				Usage:    "Buffer size for all incoming messages (number of messages)",
-				Value:    1000,
+				Usage:    "Buffer size per-host for incoming messages (number of messages)",
+				Value:    100,
 			},
 			&cli.StringSliceFlag{
 				Category: "SBS Out",
@@ -96,7 +73,7 @@ var (
 			&cli.IntFlag{
 				Category: "SBS In",
 				Name:     "bufsizeout",
-				Usage:    "Buffer size per-client for outgoing messages (number of messages)",
+				Usage:    "Buffer size per-host for outgoing messages (number of messages)",
 				Value:    100,
 			},
 			&cli.UintFlag{
@@ -119,8 +96,8 @@ var (
 	statsInterval    time.Duration
 
 	// buffer sizes
-	bufSizeIncomingMsgs          int
-	bufSizeOutgoingMsgsPerClient int
+	bufSizeIncomingMsgsPerHost int
+	bufSizeOutgoingMsgsPerHost int
 )
 
 func init() {
@@ -152,23 +129,27 @@ func runApp(cliCtx *cli.Context) error {
 	statsInterval = time.Minute * time.Duration(cliCtx.Uint64("statsinterval"))
 
 	// buffer sizes
-	bufSizeIncomingMsgs = cliCtx.Int("bufsizein")
-	bufSizeOutgoingMsgsPerClient = cliCtx.Int("bufsizeout")
+	bufSizeIncomingMsgsPerHost = cliCtx.Int("bufsizein")
+	bufSizeOutgoingMsgsPerHost = cliCtx.Int("bufsizeout")
 
-	// prep input channel
-	sbsIn := make(chan []byte, bufSizeIncomingMsgs)
-
-	// prep output struct
-	sbsOut := outputs{
-		outputChans: make(map[string]*outputPerClient),
+	// prep input iochans
+	sbsIn := iochans{
+		chans: make(map[string]*iochan),
 	}
 
-	// start incoming data handler
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		msgRouter(sbsIn, &sbsOut)
-	}()
+	// prep output iochans
+	sbsOut := iochans{
+		chans: make(map[string]*iochan),
+	}
+
+	// start msgRouter workers
+	for i := 1; i <= cliCtx.Int("numworkers"); i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			msgRouter(&sbsIn, &sbsOut, i)
+		}()
+	}
 
 	// start output listener
 	lOutAddr := cliCtx.String("outputlisten")
@@ -204,7 +185,7 @@ func runApp(cliCtx *cli.Context) error {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		inputListener(lInAddr, sbsIn)
+		inputListener(lInAddr, &sbsIn)
 	}()
 
 	// get slice of addr:ports from --inputconnect
@@ -223,7 +204,7 @@ func runApp(cliCtx *cli.Context) error {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				inputDialler(addr, sbsIn)
+				inputDialler(addr, &sbsIn)
 			}()
 		}
 	}
@@ -234,7 +215,7 @@ func runApp(cliCtx *cli.Context) error {
 	return nil
 }
 
-func outputDialler(addr *net.TCPAddr, sbsOut *outputs) {
+func outputDialler(addr *net.TCPAddr, sbsOut *iochans) {
 
 	// update log context
 	log := log.With().
@@ -255,7 +236,7 @@ func outputDialler(addr *net.TCPAddr, sbsOut *outputs) {
 	}
 }
 
-func outputListener(addr string, sbsOut *outputs) {
+func outputListener(addr string, sbsOut *iochans) {
 
 	// update log context
 	log := log.With().
@@ -290,7 +271,7 @@ func outputListener(addr string, sbsOut *outputs) {
 	}
 }
 
-func outputHandler(conn *net.TCPConn, sbsOut *outputs) {
+func outputHandler(conn *net.TCPConn, sbsOut *iochans) {
 	defer conn.Close()
 
 	var (
@@ -311,17 +292,14 @@ func outputHandler(conn *net.TCPConn, sbsOut *outputs) {
 
 	log.Info().Msg("connection established")
 
-	// prepare writer
-	wtr := bufio.NewWriter(conn)
-
 	// create channel
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		sbsOut.Lock()
-		defer sbsOut.Unlock()
-		sbsOut.outputChans[clientId] = &outputPerClient{
-			outChan: make(chan []byte, bufSizeOutgoingMsgsPerClient),
+		sbsOut.mu.Lock()
+		defer sbsOut.mu.Unlock()
+		sbsOut.chans[clientId] = &iochan{
+			c: make(chan []byte, bufSizeOutgoingMsgsPerHost),
 		}
 	}()
 	wg.Wait()
@@ -329,15 +307,15 @@ func outputHandler(conn *net.TCPConn, sbsOut *outputs) {
 	// init update time variable
 	lastUpdateTime := time.Now()
 
-	c := sbsOut.outputChans[clientId]
+	c := sbsOut.chans[clientId]
 
 	// loop forever
 	for {
 
 		// read from channel & write to client
-		msg := <-c.outChan
+		msg := <-c.c
 		msg = append(msg, []byte("\n")...)
-		n, err := wtr.Write(msg)
+		n, err := conn.Write(msg)
 		if err != nil {
 			log.Err(err).Msg("write error")
 			break
@@ -347,64 +325,96 @@ func outputHandler(conn *net.TCPConn, sbsOut *outputs) {
 
 		// update log if its been `statsInterval` since last update
 		if time.Since(lastUpdateTime) > statsInterval {
-			c.RLock()
+			c.mu.RLock()
 			log.Info().
 				Str("bytesTx", humanReadableUint64(bytesWritten)).
 				Str("msgsOut", humanReadableUint64(msgsOut)).
 				Str("msgsDropped", humanReadableUint64(c.msgsDropped)).
-				Int("msgsPending", len(c.outChan)).
+				Int("msgsPending", len(c.c)).
 				Msg("output statistics")
-			sbsOut.outputChans[clientId].RUnlock()
+			sbsOut.chans[clientId].mu.RUnlock()
 
 			lastUpdateTime = time.Now()
 		}
 	}
 	log.Info().Msg("closing connection")
-	sbsOut.Lock()
-	delete(sbsOut.outputChans, clientId)
-	sbsOut.Unlock()
+	sbsOut.mu.Lock()
+	delete(sbsOut.chans, clientId)
+	sbsOut.mu.Unlock()
 }
 
-func msgRouter(sbsIn chan []byte, sbsOut *outputs) {
+func msgRouter(sbsIn *iochans, sbsOut *iochans, workerNum int) {
 
 	var msgsRouted uint64
+
+	log := log.With().Int("worker#", workerNum).Logger()
 
 	// init update time variable
 	lastUpdateTime := time.Now()
 
 	for {
-		// receive msg from chan
-		msg := <-sbsIn
 
-		// for each output
-		sbsOut.RLock()
-		for _, cli := range sbsOut.outputChans {
+		// read lock while selecting a channel to read from
+		sbsIn.mu.RLock()
+
+		// bail out if no chans to read from
+		if len(sbsIn.chans) <= 0 {
+			sbsIn.mu.RUnlock()
+			time.Sleep(time.Millisecond * 25) // backoff to prevent killing cpu
+			continue
+		}
+
+		// reflect dynamic select magic
+		// see: https://stackoverflow.com/questions/19992334/how-to-listen-to-n-channels-dynamic-select-statement
+		cases := make([]reflect.SelectCase, len(sbsIn.chans))
+		i := 0
+		for _, c := range sbsIn.chans {
+			cases[i] = reflect.SelectCase{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(c.c)}
+			i += 1
+		}
+		_, value, ok := reflect.Select(cases)
+
+		// finished reading from input channels
+		sbsIn.mu.RUnlock()
+
+		// if our channel read wasn't ok, then bail out
+		if !ok {
+			continue
+		}
+
+		// read lock on output channels while we write
+		sbsOut.mu.RLock()
+
+		// write to each output channel
+		for _, cli := range sbsOut.chans {
 			// send to chan non blocking
 			select {
-			case cli.outChan <- msg:
+			case cli.c <- value.Bytes():
 				// msg was delivered
 				msgsRouted += 1
+				// log.Debug().Str("cli", cn).Bytes("msg", msg).Msg("wrote msg")
 			default:
 				// drop msg
-				cli.Lock()
+				cli.mu.Lock()
 				cli.msgsDropped += 1
-				cli.Unlock()
+				cli.mu.Unlock()
 			}
 		}
-		sbsOut.RUnlock()
+
+		// finished writing
+		sbsOut.mu.RUnlock()
 
 		// update log if its been `statsInterval` since last update
 		if time.Since(lastUpdateTime) > statsInterval {
 			log.Info().
 				Str("msgsRouted", humanReadableUint64(msgsRouted)).
-				Int("msgsPending", len(sbsIn)).
 				Msg("router statistics")
 			lastUpdateTime = time.Now()
 		}
 	}
 }
 
-func inputDialler(addr *net.TCPAddr, sbsIn chan []byte) {
+func inputDialler(addr *net.TCPAddr, sbsIn *iochans) {
 
 	// update log context
 	log := log.With().
@@ -425,7 +435,7 @@ func inputDialler(addr *net.TCPAddr, sbsIn chan []byte) {
 	}
 }
 
-func inputListener(addr string, sbsIn chan []byte) {
+func inputListener(addr string, sbsIn *iochans) {
 
 	// update log context
 	log := log.With().
@@ -460,36 +470,54 @@ func inputListener(addr string, sbsIn chan []byte) {
 	}
 }
 
-func inputHandler(conn *net.TCPConn, sbsIn chan []byte) {
+func inputHandler(conn *net.TCPConn, sbsIn *iochans) {
 	// handleInputConnect: connect to `addr`, read lines, send lines to chan `out`.
 
 	defer conn.Close()
 
+	var (
+		wg sync.WaitGroup
+
+		// stats counters
+		bytesRead           uint64
+		msgsIn, msgsDropped uint64
+	)
+
+	clientId := conn.RemoteAddr().String()
+
 	// update log context
 	log := log.With().
 		Str("laddr", conn.LocalAddr().String()).
-		Str("raddr", conn.RemoteAddr().String()).
+		Str("raddr", clientId).
 		Str("direction", "in").
 		Logger()
 
 	log.Info().Msg("connection established")
 
-	var (
-		err error
-		// stats counters
-		bytesRead                    uint64
-		msgsIn, msgsOut, msgsDropped uint64
-	)
+	// prepare reader
+	rdr := bufio.NewReader(conn)
+
+	// create channel
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		sbsIn.mu.Lock()
+		defer sbsIn.mu.Unlock()
+		sbsIn.chans[clientId] = &iochan{
+			c: make(chan []byte, bufSizeOutgoingMsgsPerHost),
+		}
+	}()
+	wg.Wait()
 
 	// init update time variable
 	lastUpdateTime := time.Now()
 
-	// prepare reader
-	rdr := bufio.NewReader(conn)
+	c := sbsIn.chans[clientId]
 
 	// read each line (SBS is a line-by-line protocol)
 	var buf []byte
 	var isPrefix bool
+	var err error
 	for {
 		var tmp []byte
 
@@ -508,10 +536,9 @@ func inputHandler(conn *net.TCPConn, sbsIn chan []byte) {
 		if !isPrefix {
 
 			// send data non blocking
-			msgsIn += 1
 			select {
-			case sbsIn <- buf:
-				msgsOut += 1
+			case c.c <- buf:
+				msgsIn += 1
 			default:
 				msgsDropped += 1
 			}
@@ -525,18 +552,16 @@ func inputHandler(conn *net.TCPConn, sbsIn chan []byte) {
 			log.Info().
 				Str("bytesRx", humanReadableUint64(bytesRead)).
 				Str("msgsIn", humanReadableUint64(msgsIn)).
-				Str("msgsOut", humanReadableUint64(msgsOut)).
 				Str("msgsDropped", humanReadableUint64(msgsDropped)).
+				Int("msgsPending", len(c.c)).
 				Msg("input statistics")
 			lastUpdateTime = time.Now()
 		}
 	}
-
-	// let user know of issue
-	log.Info().Msg("disconnected from remote host")
-
-	// wait for reconnectTimeout before looping (retrying)
-	time.Sleep(reconnectTimeout)
+	log.Info().Msg("closing connection")
+	sbsIn.mu.Lock()
+	delete(sbsIn.chans, clientId)
+	sbsIn.mu.Unlock()
 }
 
 func humanReadableUint64(u uint64) string {
