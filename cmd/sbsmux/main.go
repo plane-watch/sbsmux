@@ -189,7 +189,8 @@ func runApp(cliCtx *cli.Context) error {
 		if err != nil {
 			log.Err(err).Msg("invalid address")
 		} else {
-			// if address valid then write data to remote host
+
+			// if address valid then dial remote host
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -217,7 +218,8 @@ func runApp(cliCtx *cli.Context) error {
 		if err != nil {
 			log.Err(err).Msg("invalid address")
 		} else {
-			// if address valid then pull data from remote host
+
+			// if address valid then dial remote host
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -240,6 +242,7 @@ func outputDialler(addr *net.TCPAddr, sbsOut *outputs) {
 		Str("direction", "out").
 		Logger()
 
+	// dial output connection & hand off to outputHandler
 	for {
 		conn, err := net.DialTCP("tcp", nil, addr)
 		if err != nil {
@@ -248,6 +251,7 @@ func outputDialler(addr *net.TCPAddr, sbsOut *outputs) {
 			continue
 		}
 		outputHandler(conn, sbsOut)
+		time.Sleep(reconnectTimeout)
 	}
 }
 
@@ -327,7 +331,9 @@ func outputHandler(conn *net.TCPConn, sbsOut *outputs) {
 
 	c := sbsOut.outputChans[clientId]
 
+	// loop forever
 	for {
+
 		// read from channel & write to client
 		msg := <-c.outChan
 		msg = append(msg, []byte("\n")...)
@@ -406,6 +412,7 @@ func inputDialler(addr *net.TCPAddr, sbsIn chan []byte) {
 		Str("direction", "in").
 		Logger()
 
+	// dial input connection & hand off to inputHandler
 	for {
 		conn, err := net.DialTCP("tcp", nil, addr)
 		if err != nil {
@@ -414,6 +421,7 @@ func inputDialler(addr *net.TCPAddr, sbsIn chan []byte) {
 			continue
 		}
 		inputHandler(conn, sbsIn)
+		time.Sleep(reconnectTimeout)
 	}
 }
 
