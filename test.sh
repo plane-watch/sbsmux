@@ -19,7 +19,7 @@ sleep 5
 nc 127.0.0.1 30003 > "$TMPFILE" &
 NC_OUT_PID=$!
 
-cat "./cmd/sbsmux/test_data/readsb.sbs.output" | pv --force --name " SBS data sent " -b -L 256000 | nc -v 127.0.0.1 30103
+cat "./cmd/sbsmux/test_data/readsb.sbs.output" | pv --force --name " SBS data sent " -b -L 256000 | nc -v -q 5 127.0.0.1 30103
 
 echo "wait for sbsmux to flush all data"
 sleep 10
