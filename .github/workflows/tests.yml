@@ -46,8 +46,8 @@ jobs:
           go test -v -failfast -timeout=300s -count=2 -coverprofile=coverage.txt ./...
       - name: "application testing"
         run: |
-          apt-get update -y
-          apt-get install pv -y
+          sudo apt-get update -y
+          sudo apt-get install pv -y
           bash ./test.sh
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@v3
