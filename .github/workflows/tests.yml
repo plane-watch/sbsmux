@@ -1,0 +1,56 @@
+---
+name: Pull Request
+
+on:
+  # Enable manual running of action if necessary
+  workflow_dispatch:
+  # Test build/deploy on PRs to main/master
+  pull_request:
+    # Only publish on push to main branch
+    branches:
+      - main
+    # Don't trigger if it's just a documentation update
+    paths-ignore:
+      - '**.md'
+      - '**.MD'
+      - '**.yml'
+      - '.gitattributes'
+      - '.gitignore'
+  push:
+    # Only publish on push to main branch
+    branches:
+      - main
+    # Don't trigger if it's just a documentation update
+    paths-ignore:
+      - '**.md'
+      - '**.MD'
+      - '**.yml'
+      - '.gitattributes'
+      - '.gitignore'
+
+jobs:
+
+  tests:
+    name: Test sbsmux
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+      - name: "go mod tidy"
+        run: |
+          go mod tidy
+      - name: "go test"
+        run: |
+          go test -v -failfast -timeout=300s -count=2 -coverprofile=coverage.txt ./...
+      - name: "application testing"
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install pv -y
+          bash ./test.sh
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v3
+      - name: "go build"
+        run: |
+          go build ./...
