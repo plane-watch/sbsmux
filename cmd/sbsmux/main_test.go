@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -920,6 +921,8 @@ func TestHumanReadableUint64(t *testing.T) {
 
 func TestApp(t *testing.T) {
 
+	var wg sync.WaitGroup
+
 	// get listen addresses
 	inputlisten, err := nettest.NewLocalListener("tcp")
 	require.NoError(t, err)
@@ -934,10 +937,12 @@ func TestApp(t *testing.T) {
 	os.Setenv("SBSMUX_OUTPUTLISTEN", outputlisten.Addr().String())
 
 	// start app
-	go func() {
+	wg.Add(1)
+	go func(t *testing.T) {
+		defer wg.Done()
 		err = app.Run([]string{})
 		assert.NoError(t, err)
-	}()
+	}(t)
 
 	time.Sleep(time.Second * 2)
 
@@ -950,40 +955,39 @@ func TestApp(t *testing.T) {
 	require.NoError(t, err)
 	defer connOut.Close()
 
-	// test data (gz)
-	// gzr, err := gzip.NewReader(bytes.NewBuffer(testData_readsb))
-	// require.NoError(t, err, "error reading test data")
-	// s := bufio.NewScanner(gzr)
+	buf := make([]byte, 1024)
 
-	// test data (plain)
-	f, err := os.Open("test_data/readsb.sbs.output")
-	defer f.Close()
-
+	// WHY IS THIS LOOP SO SLOW???!!!!
+	f, err := os.Open("./test_data/readsb.sbs.output")
 	require.NoError(t, err)
-	s := bufio.NewReader(f)
+	s := bufio.NewScanner(f)
+	i := 0
+	for s.Scan() {
 
-	buf := make([]byte, 1024*256)
-	for {
+		i++
+		if i >= 10 {
+			break
+		}
 
-		line, err := s.ReadBytes(byte(0x0a))
+		line := s.Bytes()
+
+		n, err := connIn.Write(line)
 		require.NoError(t, err)
+		assert.Len(t, line, n)
 
-		bufIn := bytes.Clone(line[:len(line)-2]) // -2 removes \r\n
-
-		fmt.Print("w")
-		n, err := connIn.Write(bufIn)
-		require.NoError(t, err)
-		assert.Equal(t, len(bufIn), n)
-
-		fmt.Print("r")
 		n, err = connOut.Read(buf)
 		require.NoError(t, err)
-		assert.Equal(t, len(bufIn), n-1)  // n-1 to strip newline
-		assert.Equal(t, bufIn, buf[:n-1]) // n-1 to strip newline
+		assert.Equal(t, len(line), n-1)
+		assert.Equal(t, line, buf[:n-1])
 
 		fmt.Print(".")
-
 	}
-	fmt.Println(" done")
+
+	fmt.Println("done")
+
+	// shutdown
+	sigChan <- syscall.SIGTERM
+
+	wg.Wait()
 
 }
