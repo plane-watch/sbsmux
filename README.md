@@ -1,5 +1,7 @@
 # plane.watch sbsmux
 
+[![codecov](https://codecov.io/gh/plane-watch/sbsmux/graph/badge.svg?token=BJ9KPWPEGU)](https://codecov.io/gh/plane-watch/sbsmux)
+
 Receives SBS data via connect out or connect in. Sends SBS data via connect out or connect in.
 
 Originally written to merge various sources of SATCOM ADS-C data.
