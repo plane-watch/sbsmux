@@ -37,7 +37,7 @@ var (
 
 	// command line arguments
 	app = cli.App{
-		Version:     "0.0.1",
+		Version:     "1.0.0",
 		Name:        "plane.watch sbsmux",
 		Usage:       "Multiplexer for SBS data",
 		Description: `Receives SBS data via connect out or connect in. Sends SBS data via connect out or connect in.`,
