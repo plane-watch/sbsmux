@@ -92,8 +92,8 @@ var (
 			&cli.UintFlag{
 				Category: "Timeouts/Durations",
 				Name:     "statsinterval",
-				Usage:    "Delay between printing per-connection statistics (minutes)",
-				Value:    uint(10),
+				Usage:    "Delay between printing per-connection statistics (seconds)",
+				Value:    uint(600),
 			},
 			&cli.UintFlag{
 				Category: "Timeouts/Durations",
@@ -167,7 +167,7 @@ func runApp(cliCtx *cli.Context) error {
 
 	// timeouts / durations
 	reconnectDelay = time.Second * time.Duration(cliCtx.Uint64("reconnectdelay"))
-	statsInterval = time.Minute * time.Duration(cliCtx.Uint64("statsinterval"))
+	statsInterval = time.Second * time.Duration(cliCtx.Uint64("statsinterval"))
 	connectTimeout = time.Second * time.Duration(cliCtx.Uint64("connecttimeout"))
 
 	// buffer sizes
@@ -417,11 +417,27 @@ func outputHandler(ctx context.Context, conn net.Conn, ioc *iochans) error {
 	// loop forever
 	for {
 
+		// update log if its been `statsInterval` since last update
+		if time.Since(lastUpdateTime) > statsInterval {
+			c.mu.RLock()
+			log.Info().
+				Str("bytesTx", humanReadableUint64(bytesWritten)).
+				Str("msgsOut", humanReadableUint64(msgsOut)).
+				Str("msgsDropped", humanReadableUint64(c.msgsDropped)).
+				Int("msgsPending", len(c.c)).
+				Msg("output statistics")
+			ioc.chans[clientId].mu.RUnlock()
+
+			lastUpdateTime = time.Now()
+		}
+
 		select {
 
 		// handle context closure
 		case <-ctx.Done():
 			return nil
+
+		case <-time.After(time.Second):
 
 		// read from channel & write to client
 		case msg := <-c.c:
@@ -438,20 +454,6 @@ func outputHandler(ctx context.Context, conn net.Conn, ioc *iochans) error {
 			}
 			bytesWritten += uint64(n)
 			msgsOut += 1
-
-			// update log if its been `statsInterval` since last update
-			if time.Since(lastUpdateTime) > statsInterval {
-				c.mu.RLock()
-				log.Info().
-					Str("bytesTx", humanReadableUint64(bytesWritten)).
-					Str("msgsOut", humanReadableUint64(msgsOut)).
-					Str("msgsDropped", humanReadableUint64(c.msgsDropped)).
-					Int("msgsPending", len(c.c)).
-					Msg("output statistics")
-				ioc.chans[clientId].mu.RUnlock()
-
-				lastUpdateTime = time.Now()
-			}
 		}
 	}
 }
@@ -519,6 +521,17 @@ func inputHandler(ctx context.Context, conn net.Conn, ioc *iochans) error {
 		default:
 		}
 
+		// update log if its been `statsInterval` since last update
+		if time.Since(lastUpdateTime) > statsInterval {
+			log.Info().
+				Str("bytesRx", humanReadableUint64(bytesRead)).
+				Str("msgsIn", humanReadableUint64(msgsIn)).
+				Str("msgsDropped", humanReadableUint64(msgsDropped)).
+				Int("msgsPending", len(c.c)).
+				Msg("input statistics")
+			lastUpdateTime = time.Now()
+		}
+
 		// set read deadline
 		err = conn.SetReadDeadline(time.Now().Add(time.Second))
 		if err != nil {
@@ -556,17 +569,6 @@ func inputHandler(ctx context.Context, conn net.Conn, ioc *iochans) error {
 			// flush buffer
 			buf = []byte{}
 		}
-
-		// update log if its been `statsInterval` since last update
-		if time.Since(lastUpdateTime) > statsInterval {
-			log.Info().
-				Str("bytesRx", humanReadableUint64(bytesRead)).
-				Str("msgsIn", humanReadableUint64(msgsIn)).
-				Str("msgsDropped", humanReadableUint64(msgsDropped)).
-				Int("msgsPending", len(c.c)).
-				Msg("input statistics")
-			lastUpdateTime = time.Now()
-		}
 	}
 }
 
@@ -583,7 +585,7 @@ func worker(ctx context.Context, sbsIn *iochans, sbsOut *iochans, workerNum int)
 	defer log.Info().Msg("shutdown worker")
 
 	// init update time variable
-	lastUpdateTime := time.Now()
+	// lastUpdateTime := time.Now()
 
 	for {
 
@@ -651,13 +653,13 @@ func worker(ctx context.Context, sbsIn *iochans, sbsOut *iochans, workerNum int)
 			// finished writing
 			sbsOut.mu.RUnlock()
 
-			// update log if its been `statsInterval` since last update
-			if time.Since(lastUpdateTime) > statsInterval {
-				log.Info().
-					Str("msgsRouted", humanReadableUint64(msgsRouted)).
-					Msg("worker statistics")
-				lastUpdateTime = time.Now()
-			}
+			// // update log if its been `statsInterval` since last update
+			// if time.Since(lastUpdateTime) > statsInterval {
+			// 	log.Info().
+			// 		Str("msgsRouted", humanReadableUint64(msgsRouted)).
+			// 		Msg("worker statistics")
+			// 	lastUpdateTime = time.Now()
+			// }
 		}
 	}
 }
