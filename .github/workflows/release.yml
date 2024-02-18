@@ -1,0 +1,44 @@
+---
+name: Upload Release Asset
+
+on:
+  workflow_dispatch:
+
+jobs:
+  codecov:
+    runs-on: ubuntu-latest
+    name: Codecov
+    steps:
+      - uses: actions/checkout@v4
+      - name: "go mod tidy"
+        run: |
+          go mod tidy
+      - name: "go test"
+        run: |
+          go test -v -failfast -timeout=300s -count=2 -coverprofile=coverage.txt ./...
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v3
+
+  upload:
+    needs: codecov
+    strategy:
+      matrix:
+        os: [linux]
+        arch: [amd64,arm64]
+    name: Upload
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: "go mod tidy"
+      run: |
+        go mod tidy
+    - name: "go build"
+      run: |
+        GOOS=${{ matrix.os }} GOARCH=${{ matrix.arch }} go build ./cmd/sbsmux
+        tar cJvf ../sbsmux.${{ github.ref_name }}.${{ matrix.os }}.${{ matrix.arch }}.tar.xz ./sbsmux
+        rm -v ./sbsmux
+    - name: Upload binaries to release
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        gh release upload ${{ github.ref_name }} ./sbsmux.${{ github.ref_name }}.${{ matrix.os }}.${{ matrix.arch }}.tar.xz
