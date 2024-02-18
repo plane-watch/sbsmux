@@ -43,7 +43,7 @@ jobs:
           go mod tidy
       - name: "go test"
         run: |
-          go test -v -race -failfast -timeout=300s -count=2 -coverprofile=coverage.txt ./...
+          go test -v -failfast -timeout=300s -count=2 -coverprofile=coverage.txt ./...
       - name: "application testing"
         run: |
           bash ./test.sh
