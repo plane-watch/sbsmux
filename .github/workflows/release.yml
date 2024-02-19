@@ -22,13 +22,13 @@ jobs:
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@v4
 
-  upload:
+  upload_linux:
+    name: "Linux Binaries"
     needs: codecov
     strategy:
       matrix:
         os: [linux]
         arch: [amd64,arm64]
-    name: Upload
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -41,10 +41,38 @@ jobs:
     - name: "go build"
       run: |
         GOOS=${{ matrix.os }} GOARCH=${{ matrix.arch }} go build ./cmd/sbsmux
-        tar cJvf ../sbsmux.${{ github.ref_name }}.${{ matrix.os }}.${{ matrix.arch }}.tar.xz ./sbsmux
+        tar cJvf ./sbsmux.${{ github.ref_name }}.${{ matrix.os }}.${{ matrix.arch }}.tar.xz ./sbsmux
         rm -v ./sbsmux
     - name: Upload binaries to release
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
         gh release upload ${{ github.ref_name }} ./sbsmux.${{ github.ref_name }}.${{ matrix.os }}.${{ matrix.arch }}.tar.xz
+
+  upload_windows:
+    name: "Windows Binaries"
+    needs: codecov
+    strategy:
+      matrix:
+        os: [windows]
+        arch: [amd64]
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-go@v5
+      with:
+        go-version: 'stable'
+    - name: "go mod tidy"
+      run: |
+        go mod tidy
+    - name: "go build"
+      run: |
+        GOOS=${{ matrix.os }} GOARCH=${{ matrix.arch }} go build ./cmd/sbsmux
+        zip -vD ./sbsmux.${{ github.ref_name }}.${{ matrix.os }}.${{ matrix.arch }}.zip ./sbsmux
+        rm -v ./sbsmux
+    - name: Upload binaries to release
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        gh release upload ${{ github.ref_name }} ./sbsmux.${{ github.ref_name }}.${{ matrix.os }}.${{ matrix.arch }}.zip
+      
