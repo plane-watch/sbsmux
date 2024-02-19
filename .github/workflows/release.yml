@@ -70,7 +70,7 @@ jobs:
     - name: "go build"
       run: |
         GOOS=${{ matrix.os }} GOARCH=${{ matrix.arch }} go build ./cmd/sbsmux
-        zip -vD ./sbsmux.${{ github.ref_name }}.${{ matrix.os }}.${{ matrix.arch }}.zip ./sbsmux
+        zip -vD ./sbsmux.${{ github.ref_name }}.${{ matrix.os }}.${{ matrix.arch }}.zip ./sbsmux.exe
         rm -v ./sbsmux
     - name: Upload binaries to release
       env:
